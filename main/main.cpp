@@ -37,13 +37,20 @@
 #include <Preferences.h>
 #include <Wire.h>
 #include <axp20x.h>
+#ifdef USE_RADIOLIB
+#include "lmic_compat.h"  // dr_t / DR_SF* / EV_* without LMIC
+#else
 #include <lmic.h>
+#endif
 
 #include "configuration.h"
 #include "gps.h"
 #include "screen.h"
 #include "sleep.h"
 #include "ttn.h"
+#ifdef ENABLE_CONFIG_PORTAL
+#include "config_portal.h"
+#endif
 
 #define FPORT_MAPPER 2  // FPort for Uplink messages -- must match Helium Console Decoder script!
 #define FPORT_STATUS 5
@@ -362,6 +369,11 @@ void mapper_restore_prefs(void) {
     if (sizeof(lorawan_sf) != sizeof(unsigned char))
       Serial.println("Error!  size mismatch for sf");
     lorawan_sf = p.getUChar("sf", LORAWAN_SF);
+#ifdef ENABLE_CONFIG_PORTAL
+    deadzone_lat = p.getDouble("dz_lat", DEADZONE_LAT);
+    deadzone_lon = p.getDouble("dz_lon", DEADZONE_LON);
+    deadzone_radius_m = p.getDouble("dz_radius", DEADZONE_RADIUS_M);
+#endif
     // Close the Preferences
     p.end();
   } else {
@@ -386,6 +398,11 @@ void mapper_save_prefs(void) {
     p.putUInt("rest_tx", rest_tx_interval_s);
     p.putUInt("tx_interval", stationary_tx_interval_s);
     p.putUChar("sf", lorawan_sf);
+#ifdef ENABLE_CONFIG_PORTAL
+    p.putDouble("dz_lat", deadzone_lat);
+    p.putDouble("dz_lon", deadzone_lon);
+    p.putDouble("dz_radius", deadzone_radius_m);
+#endif
     p.end();
   }
 }
@@ -653,8 +670,7 @@ void axp192Init() {
     // Fire an interrupt on falling edge.  Note that some IRQs repeat/persist.
     pinMode(PMU_IRQ, INPUT);
     gpio_pullup_en((gpio_num_t)PMU_IRQ);
-    attachInterrupt(
-        PMU_IRQ, [] { pmu_irq = true; }, FALLING);
+    attachInterrupt(PMU_IRQ, [] { pmu_irq = true; }, FALLING);
 
     // Configure REG 36H: PEK press key parameter set.  Index values for
     // argument!
@@ -870,8 +886,7 @@ void clean_shutdown(void) {
 
     axp.shutdown();  // PMIC power off
   } else {
-    while (1)
-      ;  // ?? What to do here.  burn power?
+    while (1);  // ?? What to do here.  burn power?
   }
 }
 
@@ -1139,7 +1154,7 @@ void menu_experiment(void) {
   snprintf(buffer, sizeof(buffer), "\nGPS %dmv", gps_mv);
   screen_print(buffer);
 
-  axp.setLDO3Voltage(gps_mv);                          // Voltage for GPS Power.  (Neo-6 can take 2.7v to 3.6v) 
+  axp.setLDO3Voltage(gps_mv);  // Voltage for GPS Power.  (Neo-6 can take 2.7v to 3.6v)
 }
 
 void menu_deadzone_here(void) {
@@ -1161,6 +1176,21 @@ void menu_gps_reset(void) {
   gps_full_reset();
 }
 
+#ifdef ENABLE_CONFIG_PORTAL
+void menu_config_wifi(void) {
+  screen_print("\nStarting WiFi...\n");
+  screen_update();
+  config_portal_run_wifi();  // Blocks until exit; BLE stays off (no coexistence).
+  in_menu = false;
+}
+void menu_config_ble(void) {
+  screen_print("\nStarting BLE...\n");
+  screen_update();
+  config_portal_run_ble();  // Blocks until exit; WiFi stays off (no coexistence).
+  in_menu = false;
+}
+#endif
+
 dr_t sf_list[] = {DR_SF7, DR_SF8, DR_SF9, DR_SF10};
 #define SF_ENTRIES (sizeof(sf_list) / sizeof(sf_list[0]))
 uint8_t sf_index = 0;
@@ -1181,7 +1211,11 @@ struct menu_entry menu[] = {
     {"Distance -", menu_distance_minus},   {"Time +", menu_time_plus},        {"Time -", menu_time_minus},
     {"Change SF", menu_change_sf},         {"Full Reset", menu_flush_prefs},  {"USB GPS", menu_gps_passthrough},
     {"Deadzone Here", menu_deadzone_here}, {"No Deadzone", menu_no_deadzone}, {"Stay On", menu_stay_on},
-    {"GPS Reset", menu_gps_reset},         {"Experiment", menu_experiment}};
+    {"GPS Reset", menu_gps_reset},
+#ifdef ENABLE_CONFIG_PORTAL
+    {"WiFi Setup", menu_config_wifi},      {"BLE Setup", menu_config_ble},
+#endif
+    {"Experiment", menu_experiment}};
 #define MENU_ENTRIES (sizeof(menu) / sizeof(menu[0]))
 
 const char *menu_prev;
@@ -1230,7 +1264,7 @@ void loop() {
   ttn_loop();
 
   // menu timeout
-  if (in_menu && now - menu_idle_start > (MENU_TIMEOUT_S)*1000)
+  if (in_menu && now - menu_idle_start > (MENU_TIMEOUT_S) * 1000)
     in_menu = false;
 
   update_screen();

@@ -26,6 +26,9 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include "ttn.h"
 
+// The RadioLib backend (ttn_radiolib.cpp) replaces this entire file.
+#ifndef USE_RADIOLIB
+
 #include <Arduino.h>
 #include <Preferences.h>
 #include <SPI.h>
@@ -66,16 +69,67 @@ void os_getDevKey(u1_t* buf) {}
 #endif
 
 #ifdef USE_OTAA
+
+#ifdef ENABLE_CONFIG_PORTAL
+// Runtime-configurable credentials entered via the WiFi config portal.
+// Working copies live in RAM, seeded from the compile-time credentials.cpp
+// values and then overridden by anything saved in NVS.
+static uint8_t ram_appeui[8];
+static uint8_t ram_appkey[16];
+
+void ttn_load_credentials(void) {
+  memcpy_P(ram_appeui, APPEUI, 8);
+  memcpy_P(ram_appkey, APPKEY, 16);
+  Preferences p;
+  if (p.begin("creds", true)) {
+    if (p.getBytesLength("appeui") == 8)
+      p.getBytes("appeui", ram_appeui, 8);
+    if (p.getBytesLength("appkey") == 16)
+      p.getBytes("appkey", ram_appkey, 16);
+    if (p.getBytesLength("deveui") == 8)
+      p.getBytes("deveui", DEVEUI, 8);
+    p.end();
+  }
+}
+
+void ttn_set_credentials(const uint8_t* deveui, const uint8_t* appeui, const uint8_t* appkey) {
+  memcpy(DEVEUI, deveui, 8);
+  memcpy(ram_appeui, appeui, 8);
+  memcpy(ram_appkey, appkey, 16);
+  Preferences p;
+  if (p.begin("creds", false)) {
+    p.putBytes("deveui", DEVEUI, 8);
+    p.putBytes("appeui", ram_appeui, 8);
+    p.putBytes("appkey", ram_appkey, 16);
+    p.end();
+  }
+}
+
+void ttn_get_credentials(uint8_t* deveui, uint8_t* appeui, uint8_t* appkey) {
+  memcpy(deveui, DEVEUI, 8);
+  memcpy(appeui, ram_appeui, 8);
+  memcpy(appkey, ram_appkey, 16);
+}
+#endif  // ENABLE_CONFIG_PORTAL
+
 void os_getArtEui(u1_t* buf) {
+#ifdef ENABLE_CONFIG_PORTAL
+  memcpy(buf, ram_appeui, 8);
+#else
   memcpy_P(buf, APPEUI, 8);
+#endif
 }
 void os_getDevEui(u1_t* buf) {
   memcpy(buf, DEVEUI, 8);
 }
 void os_getDevKey(u1_t* buf) {
+#ifdef ENABLE_CONFIG_PORTAL
+  memcpy(buf, ram_appkey, 16);
+#else
   memcpy_P(buf, APPKEY, 16);
-}
 #endif
+}
+#endif  // USE_OTAA
 
 std::vector<void (*)(uint8_t message)> _lmic_callbacks;
 
@@ -252,7 +306,10 @@ bool ttn_setup() {
   initCount();
 
 #if defined(USE_OTAA)
-  initDevEUI();
+#ifdef ENABLE_CONFIG_PORTAL
+  ttn_load_credentials();  // Load any keys saved via the config portal (defaults to credentials.cpp)
+#endif
+  initDevEUI();  // Generate DevEUI from the MAC if it is still all-zero
 #endif
 
   // Print out DevEUI, AppEUI, APPKEY suitable for Helium Console
@@ -505,3 +562,5 @@ boolean ttn_send(uint8_t* data, uint8_t data_size, uint8_t port, bool confirmed)
 void ttn_loop() {
   os_runloop_once();
 }
+
+#endif  // !USE_RADIOLIB
